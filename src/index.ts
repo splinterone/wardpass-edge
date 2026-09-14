@@ -16,7 +16,7 @@ export type ScreenResult = {
 };
 
 export type WardPassClientOptions = {
-  /** Hosted API base, e.g. https://api.wardpass.example */
+  /** Hosted API base, e.g. https://wardpass-gateway-staging.fly.dev (staging, not production) */
   baseUrl: string;
   /** Per-operator API key from free-tier signup (TN consent required). */
   apiKey: string;
