@@ -8,7 +8,7 @@
 - Oversight heartbeat (“I’m watching”) — a **dead-man’s switch** on new spend
 - **Clearance network**: when you are on the Trust Network *and* oversight is live, receivers can `POST /v1/screen` before irreversible settle
 
-This repo is the thin open-source **phone-home client**. Clone it, point it at hosted WardPass, and you are on the bureau.
+This repo is the thin open-source **phone-home client**. Clone it, point `WARDPASS_URL` at the live staging gateway, and you are on the bureau.
 
 It is **not** a self-hosted gateway. It is **not** the AgentBound monorepo. The control plane, ledger, Trust Network, and `/v1/screen` bureau stay on **WardPass hosted**.
 
@@ -34,12 +34,12 @@ When published: `npm install wardpass-edge`.
 ### 2. Configure
 
 ```bash
-export WARDPASS_URL=https://api.wardpass.example   # hosted base URL from signup
+export WARDPASS_URL=https://wardpass-gateway-staging.fly.dev
 export WARDPASS_KEY=wpk_…                          # operator key (phone-home)
 export WARDPASS_RECEIVER_KEY=abrk_…                # receiver key for /v1/screen
 ```
 
-Hosted signup URL lands as WardPass staging comes up. Free tier = one seat; extra seats are a later upsell.
+That host is **staging** (`*.fly.dev`), not a production custom domain. `curl "$WARDPASS_URL/health"` should return `{"status":"ok","mode":"gateway"}`. Free tier = one seat; extra seats are a later upsell.
 
 ### 3. Phone home (operators)
 
@@ -49,7 +49,7 @@ Use your operator key against the hosted control plane. This package authenticat
 import { WardPassClient } from "wardpass-edge";
 
 const wp = new WardPassClient({
-  baseUrl: process.env.WARDPASS_URL,
+  baseUrl: process.env.WARDPASS_URL || "https://wardpass-gateway-staging.fly.dev",
   apiKey: process.env.WARDPASS_KEY,
 });
 // Ready: Policy Passports, reserve/settle, and oversight heartbeat
@@ -68,7 +68,7 @@ Or in your settle path:
 import { WardPassClient } from "wardpass-edge";
 
 const out = await WardPassClient.screenBeforeSettle({
-  baseUrl: process.env.WARDPASS_URL,
+  baseUrl: process.env.WARDPASS_URL || "https://wardpass-gateway-staging.fly.dev",
   receiverApiKey: process.env.WARDPASS_RECEIVER_KEY, // abrk_…
   body: { agentId, amount, asset, payTo, network },
 });
@@ -109,6 +109,6 @@ You can point this client at your own DIY settle path without WardPass hosting. 
 
 ## Status
 
-Scaffold for the free↔TN cold start. Hosted signup URL and npm publish land as WardPass staging comes up.
+Staging gateway is live at `https://wardpass-gateway-staging.fly.dev` (Fly.dev hostname, not a production custom domain). Point `WARDPASS_URL` at it. npm publish of this package is still pending — clone and `npm run build` until then.
 
 Apache-2.0. Product backend remains proprietary.
