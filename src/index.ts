@@ -1,6 +1,7 @@
 /**
- * wardpass-edge — thin client for WardPass hosted API.
- * Does not implement the full gateway. Phone-home only.
+ * wardpass-edge — thin phone-home client for WardPass hosted.
+ * Plug into the free control plane (passports, reserve/settle, oversight, /v1/screen).
+ * Does not implement the full gateway. Not a self-host of AgentBound.
  */
 
 export type ScreenDecision = "allow" | "review" | "deny" | "insufficient_data";
@@ -89,4 +90,4 @@ export class WardPassClient {
 }
 
 export const TRUST_NETWORK_CONSENT_SUMMARY =
-  "Free WardPass hosting requires Trust Network: signals feed /v1/screen and may be shared (aggregated/de-identified) with selected underwriting evaluation partners. TN is not a trust seal.";
+  "Free WardPass hosting is a blunt trade: Trust Network membership. Aggregated/de-identified signals feed /v1/screen and may go to selected underwriting evaluation partners. TN is not a trust seal.";

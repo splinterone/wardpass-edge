@@ -1,7 +1,7 @@
 {
   "name": "wardpass-edge",
   "version": "0.1.0",
-  "description": "Thin OSS client for WardPass — phone-home to hosted Trust Network / screen. Not a self-host of the full gateway.",
+  "description": "Thin OSS client for WardPass — plug into the free hosted policy gateway, Policy Passports, and pre-settle /v1/screen. Not a full gateway self-host.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -34,6 +34,9 @@
     "wardpass",
     "x402",
     "agent-payments",
+    "policy-passport",
+    "pre-settle",
+    "clearance",
     "trust-network",
     "screen"
   ],
