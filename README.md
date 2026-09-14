@@ -1,37 +1,68 @@
 # wardpass-edge
 
-Thin **open-source client** for [WardPass](https://github.com/splinterone) — the hosted pre-settle trust layer for irreversible agent payments.
+**WardPass** gives builders a hosted policy gateway for agent payments — **free** for one seat:
 
-> **This is not the full gateway.** The control plane, hash-chained ledger, Trust Network, and `POST /v1/screen` bureau stay on **WardPass hosted** (private product). This package phones home.
+- Operator account and **1 agent seat**
+- **Policy Passports** for scoped spend
+- **Reserve / settle** through *your* facilitator(s)
+- Oversight heartbeat (“I’m watching”) — a **dead-man’s switch** on new spend
+- **Clearance network**: when you are on the Trust Network *and* oversight is live, receivers can `POST /v1/screen` before irreversible settle
 
-## Company vs codenames
+This repo is the thin open-source **phone-home client**. Clone it, point it at hosted WardPass, and you are on the bureau.
 
-| Name | Role |
-| --- | --- |
-| **WardPass** | Company + public product (gateway for operators + `/screen` for receivers) |
-| **AgentBound** | Private engineering monorepo / interim codename |
-| **wardpass-edge** | This public OSS client |
+It is **not** a self-hosted gateway. It is **not** the AgentBound monorepo. The control plane, ledger, Trust Network, and `/v1/screen` bureau stay on **WardPass hosted**.
 
-## Free hosted tier ↔ Trust Network
+## Why this exists
 
-Free WardPass hosting requires **Trust Network** membership under blunt consent:
+Receivers take the irreversible-settle risk. Screening only works if enough operators are live, consented, and visible. This client is how you plug in in minutes — densifying the clearance bureau for everyone who screens before they settle.
 
-1. Aggregated / de-identified signals feed receiving-side **`/v1/screen`**
-2. Same class of telemetry may be shared with **selected insurance / certification / underwriting evaluation partners**
-3. Leave TN → stop new contribution and lose free hosted eligibility
+v0 is honest: `/v1/screen` never returns `confidence: high`. `insufficient_data` is first-class, not a silent allow.
 
-See [CONSENT.md](./CONSENT.md).
+## Quick start
 
-**Trust Network is not a trust seal.** `/v1/screen` **allow** still needs a known agent, valid passport where applicable, and **live** oversight. v0 never returns `confidence: high`. `insufficient_data` is not a silent allow.
-
-## Install
+### 1. Install
 
 ```bash
-npm install wardpass-edge   # when published
-# or: clone and npm run build
+git clone https://github.com/splinterone/wardpass-edge.git
+cd wardpass-edge
+npm install
+npm run build
 ```
 
-## Receiver: screen before settle
+When published: `npm install wardpass-edge`.
+
+### 2. Configure
+
+```bash
+export WARDPASS_URL=https://api.wardpass.example   # hosted base URL from signup
+export WARDPASS_KEY=wpk_…                          # operator key (phone-home)
+export WARDPASS_RECEIVER_KEY=abrk_…                # receiver key for /v1/screen
+```
+
+Hosted signup URL lands as WardPass staging comes up. Free tier = one seat; extra seats are a later upsell.
+
+### 3. Phone home (operators)
+
+Use your operator key against the hosted control plane. This package authenticates; it does not reimplement passports, reserve/settle, or the heartbeat.
+
+```js
+import { WardPassClient } from "wardpass-edge";
+
+const wp = new WardPassClient({
+  baseUrl: process.env.WARDPASS_URL,
+  apiKey: process.env.WARDPASS_KEY,
+});
+// Ready: Policy Passports, reserve/settle, and oversight heartbeat
+// are hosted routes. Call them with this client’s credentials — don’t fork a gateway.
+```
+
+### 4. Screen before settle (receivers)
+
+```bash
+node examples/screen-before-settle.mjs
+```
+
+Or in your settle path:
 
 ```js
 import { WardPassClient } from "wardpass-edge";
@@ -45,6 +76,36 @@ const out = await WardPassClient.screenBeforeSettle({
 WardPassClient.assertScreenAllow(out); // throws on review | deny | insufficient_data
 // … then call your facilitator settle …
 ```
+
+`allow` still requires a known agent, a valid passport where applicable, and **live** oversight. Trust Network membership is not a trust seal.
+
+## Free tier trade
+
+Free control plane ↔ **mandatory Trust Network** membership. That is the blunt deal: you get hosting; the bureau gets density.
+
+- Aggregated / de-identified signals feed receiving-side **`/v1/screen`**
+- The same class of telemetry may be shared with **selected insurance / certification / underwriting evaluation partners**
+- Leave TN → stop new contribution **and** lose free hosted eligibility
+
+Full text: [CONSENT.md](./CONSENT.md).
+
+## Not a full gateway
+
+| This OSS repo | WardPass hosted (private product) |
+| --- | --- |
+| Thin TypeScript client + screen helper | Control plane, hash-chained ledger, Trust Network, `POST /v1/screen` bureau |
+| Apache-2.0 phone-home | Operator seats, Policy Passports, reserve/settle, oversight heartbeat |
+| Clone and run | **Not** the AgentBound monorepo — that stays private |
+
+You can point this client at your own DIY settle path without WardPass hosting. You just will not get the free control plane.
+
+## Names
+
+| Name | Role |
+| --- | --- |
+| **WardPass** | Company + public product (gateway for operators + `/screen` for receivers) |
+| **AgentBound** | Private engineering monorepo / interim codename |
+| **wardpass-edge** | This public OSS client |
 
 ## Status
 
