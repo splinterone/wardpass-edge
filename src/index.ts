@@ -90,4 +90,4 @@ export class WardPassClient {
 }
 
 export const TRUST_NETWORK_CONSENT_SUMMARY =
-  "Free WardPass hosting is a blunt trade: Trust Network membership. Aggregated/de-identified signals feed /v1/screen and may go to selected underwriting evaluation partners. TN is not a trust seal.";
+  "Free WardPass hosting is a blunt trade: Trust Network membership. Aggregated/de-identified signals feed /v1/screen and may go to selected underwriting evaluation partners. At low participant counts, aggregated signals may still be attributable to specific operators. TN is not a trust seal.";
