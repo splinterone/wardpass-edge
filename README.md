@@ -85,6 +85,7 @@ Free control plane ↔ **mandatory Trust Network** membership. That is the blunt
 
 - Aggregated / de-identified signals feed receiving-side **`/v1/screen`**
 - The same class of telemetry may be shared with **selected insurance / certification / underwriting evaluation partners**
+- At low participant counts, aggregated signals may still be attributable to specific operators
 - Leave TN → stop new contribution **and** lose free hosted eligibility
 
 Full text: [CONSENT.md](./CONSENT.md).
