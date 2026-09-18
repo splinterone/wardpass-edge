@@ -1,16 +1,18 @@
 # wardpass-edge
 
-**WardPass** gives builders a hosted policy gateway for agent payments — **free** for one seat:
+**WardPass** is a **free hosted control plane** (policy gateway) for agent payments — **one seat**:
 
-- Operator account and **1 agent seat**
+- Operator account and API key
+- Create / kill **1 agent**
 - **Policy Passports** for scoped spend
-- **Reserve / settle** through *your* facilitator(s)
+- **Reserve → settle** through *your* facilitator(s)
 - Oversight heartbeat (“I’m watching”) — a **dead-man’s switch** on new spend
-- **Clearance network**: when you are on the Trust Network *and* oversight is live, receivers can `POST /v1/screen` before irreversible settle
+- **Admin console** (operator `/admin` API)
+- **Clearance / `POST /v1/screen`:** when you are on the Trust Network *and* oversight is live *and* the agent is known, receivers can screen before irreversible settle
 
-This repo is the thin open-source **phone-home client**. Install [`wardpass-edge`](https://www.npmjs.com/package/wardpass-edge), point `WARDPASS_URL` at the live staging gateway, and you are on the bureau.
+Install [`wardpass-edge`](https://www.npmjs.com/package/wardpass-edge) and point `WARDPASS_URL` at the live staging gateway to phone home to that plane.
 
-It is **not** a self-hosted gateway. It is **not** the AgentBound monorepo. The control plane, ledger, Trust Network, and `/v1/screen` bureau stay on **WardPass hosted**.
+This repo is **not** a self-hosted gateway and **not** the AgentBound monorepo. The control plane, ledger, Trust Network, and `/v1/screen` bureau stay on **WardPass hosted**.
 
 ## Install
 
@@ -33,7 +35,9 @@ npm run build
 
 ## Why this exists
 
-Receivers take the irreversible-settle risk. Screening only works if enough operators are live, consented, and visible. This client is how you plug in in minutes — densifying the clearance bureau for everyone who screens before they settle.
+The signup hook is the **free hosted control plane**: one operator seat with passports, reserve→settle, oversight, and an admin API — without forking a gateway.
+
+Trust Network membership is **mandatory** on that free seat so the clearance bureau has density. Receivers take the irreversible-settle risk; `POST /v1/screen` only works if enough operators are live, consented, and visible.
 
 v0 is honest: `/v1/screen` never returns `confidence: high`. `insufficient_data` is first-class, not a silent allow.
 
@@ -43,26 +47,75 @@ v0 is honest: `/v1/screen` never returns `confidence: high`. `insufficient_data`
 
 ```bash
 export WARDPASS_URL=https://wardpass-gateway-staging.fly.dev
-export WARDPASS_KEY=wpk_…                          # operator key (phone-home)
-export WARDPASS_RECEIVER_KEY=abrk_…                # receiver key for /v1/screen
+export WARDPASS_KEY=abok_…                         # operator key from POST /v1/signup
+export WARDPASS_RECEIVER_KEY=abrk_…                # receiver key for /v1/screen (invite-only)
 ```
 
-That host is **staging** (`*.fly.dev`), not a production custom domain. `curl "$WARDPASS_URL/health"` should return `{"status":"ok","mode":"gateway"}`. Free tier = one seat; extra seats are a later upsell.
+That host is **staging** (`*.fly.dev`), not a production custom domain. `curl "$WARDPASS_URL/health"` should return `{"status":"ok","mode":"gateway"}`. Free tier = one seat (`maxAgents: 1`); extra seats are a later upsell.
 
 ### 2. Phone home (operators)
 
-Use your operator key against the hosted control plane. This package authenticates; it does not reimplement passports, reserve/settle, or the heartbeat.
+`WardPassClient` holds the operator key (`baseUrl`, `apiKey`, optional `operatorId`). It does **not** wrap control-plane routes as instance methods — those stay on the hosted API. `screenBeforeSettle` / `assertScreenAllow` are the only client helpers (receivers, step 3).
+
+Signup (Trust Network consent is required; see [CONSENT.md](./CONSENT.md)):
+
+```js
+const baseUrl = process.env.WARDPASS_URL || "https://wardpass-gateway-staging.fly.dev";
+
+const plan = await fetch(`${baseUrl}/v1/signup`).then((r) => r.json());
+// { plan: "free", maxAgents: 1, acceptField: "acceptTrustNetworkConsent", ... }
+
+const { operatorId, apiKey } = await fetch(`${baseUrl}/v1/signup`, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ acceptTrustNetworkConsent: true }),
+}).then((r) => r.json());
+// apiKey is abok_… — set WARDPASS_KEY to this
+```
+
+Then call hosted `/admin/*` with that key. Using the client only for credentials:
 
 ```js
 import { WardPassClient } from "wardpass-edge";
 
 const wp = new WardPassClient({
   baseUrl: process.env.WARDPASS_URL || "https://wardpass-gateway-staging.fly.dev",
-  apiKey: process.env.WARDPASS_KEY,
+  apiKey: process.env.WARDPASS_KEY, // abok_…
 });
-// Ready: Policy Passports, reserve/settle, and oversight heartbeat
-// are hosted routes. Call them with this client’s credentials — don’t fork a gateway.
+
+const headers = {
+  authorization: `Bearer ${wp.apiKey}`,
+  "content-type": "application/json",
+};
+
+const created = await fetch(`${wp.baseUrl}/admin/agents`, {
+  method: "POST",
+  headers,
+  body: JSON.stringify({ displayName: "pilot" }),
+}).then((r) => r.json());
+// { agentId } or { error: "agent_limit_reached", plan: "free", maxAgents: 1 }
+
+const { agents } = await fetch(`${wp.baseUrl}/admin/agents`, { headers }).then((r) => r.json());
+
+await fetch(`${wp.baseUrl}/admin/agents/${created.agentId}/passports`, {
+  method: "POST",
+  headers,
+  body: JSON.stringify({ policy: { /* spend-cap object */ } }),
+});
+// Hosted errors: policy_missing | invalid_cap_shape
+
+// Reserve → settle is hosted policy + *your* facilitator(s).
+// Staging also exposes x402 POST /verify and POST /settle
+// (paymentPayload + paymentRequirements) — this client does not wrap them.
+
+await fetch(`${wp.baseUrl}/admin/agents/${created.agentId}/kill`, {
+  method: "POST",
+  headers,
+  body: JSON.stringify({}),
+});
 ```
+
+Other operator routes (same Bearer token): `GET`/`POST /admin/api-keys`, `POST /admin/api-keys/:id/revoke`, `GET /admin/approvals`, `GET /admin/screens`. Oversight heartbeat is hosted (dead-man on new spend); `/v1/screen` **allow** still requires it live.
 
 ### 3. Screen before settle (receivers)
 
@@ -102,9 +155,9 @@ Full text: [CONSENT.md](./CONSENT.md).
 
 | This OSS repo | WardPass hosted (private product) |
 | --- | --- |
-| Thin TypeScript client + screen helper | Control plane, hash-chained ledger, Trust Network, `POST /v1/screen` bureau |
-| Apache-2.0 phone-home | Operator seats, Policy Passports, reserve/settle, oversight heartbeat |
-| Install and run | **Not** the AgentBound monorepo — that stays private |
+| TypeScript client + screen helper (`screenBeforeSettle`, `assertScreenAllow`) | Control plane, hash-chained ledger, Trust Network, `POST /v1/screen` bureau |
+| Apache-2.0 phone-home to `/v1/signup` and `/admin/*` | Operator seats, Policy Passports, reserve/settle, oversight heartbeat, admin console |
+| `npm i wardpass-edge` | **Not** the AgentBound monorepo — that stays private |
 
 You can point this client at your own DIY settle path without WardPass hosting. You just will not get the free control plane.
 
@@ -112,12 +165,12 @@ You can point this client at your own DIY settle path without WardPass hosting. 
 
 | Name | Role |
 | --- | --- |
-| **WardPass** | Company + public product (gateway for operators + `/screen` for receivers) |
+| **WardPass** | Company + public product (hosted control plane for operators + `/screen` for receivers) |
 | **AgentBound** | Private engineering monorepo / interim codename |
 | **wardpass-edge** | This public OSS client |
 
 ## Status
 
-Staging gateway is live at `https://wardpass-gateway-staging.fly.dev` (Fly.dev hostname, not a production custom domain). Point `WARDPASS_URL` at it. Install from npm: [`wardpass-edge`](https://www.npmjs.com/package/wardpass-edge).
+**wardpass-edge@0.1.1** is on npm: [`wardpass-edge`](https://www.npmjs.com/package/wardpass-edge). Staging gateway is live at `https://wardpass-gateway-staging.fly.dev` (Fly.dev hostname, not a production custom domain). Point `WARDPASS_URL` at it.
 
 Apache-2.0. Product backend remains proprietary.

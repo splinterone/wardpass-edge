@@ -1,7 +1,7 @@
 {
   "name": "wardpass-edge",
-  "version": "0.1.0",
-  "description": "Thin OSS client for WardPass — plug into the free hosted policy gateway, Policy Passports, and pre-settle /v1/screen. Not a full gateway self-host.",
+  "version": "0.1.1",
+  "description": "Free hosted WardPass control plane (1 agent seat): Policy Passports, reserve→settle, oversight heartbeat, admin console. OSS client + receiver POST /v1/screen. Not a full gateway self-host.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
