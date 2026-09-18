@@ -8,9 +8,9 @@
 - **Reserve → settle** through *your* facilitator(s)
 - Oversight heartbeat (“I’m watching”) — a **dead-man’s switch** on new spend
 - **Admin console** (operator `/admin` API)
-- **Clearance / `POST /v1/screen`:** when you are on the Trust Network *and* oversight is live *and* the agent is known, receivers can screen before irreversible settle
+- **Clearance / `POST /v1/screen`:** Trust Network + live oversight + known agent. Screen before irreversible settle
 
-Install [`wardpass-edge`](https://www.npmjs.com/package/wardpass-edge) and point `WARDPASS_URL` at the live staging gateway to phone home to that plane.
+Install [`wardpass-edge`](https://www.npmjs.com/package/wardpass-edge) and point `WARDPASS_URL` at the live staging gateway.
 
 This repo is **not** a self-hosted gateway and **not** the AgentBound monorepo. The control plane, ledger, Trust Network, and `/v1/screen` bureau stay on **WardPass hosted**.
 
@@ -35,9 +35,9 @@ npm run build
 
 ## Why this exists
 
-The signup hook is the **free hosted control plane**: one operator seat with passports, reserve→settle, oversight, and an admin API — without forking a gateway.
+**Free hosted control plane**: one operator seat with passports, reserve→settle, oversight, and an admin API — without forking a gateway.
 
-Trust Network membership is **mandatory** on that free seat so the clearance bureau has density. Receivers take the irreversible-settle risk; `POST /v1/screen` only works if enough operators are live, consented, and visible.
+Trust Network membership is **mandatory** on that seat so the clearance bureau has density. If you're taking agent payments, settle is irreversible — `POST /v1/screen` only works if enough operators are live, consented, and visible.
 
 v0 is honest: `/v1/screen` never returns `confidence: high`. `insufficient_data` is first-class, not a silent allow.
 
