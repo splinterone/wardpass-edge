@@ -171,6 +171,6 @@ You can point this client at your own DIY settle path without WardPass hosting. 
 
 ## Status
 
-This repo is **0.1.1**. npm is still **0.1.0** until we publish ([wardpass-edge](https://www.npmjs.com/package/wardpass-edge)). Staging gateway is live at `https://wardpass-gateway-staging.fly.dev` (Fly.dev hostname, not a production custom domain). Point `WARDPASS_URL` at it.
+**wardpass-edge@0.1.1** is on npm: [`wardpass-edge`](https://www.npmjs.com/package/wardpass-edge). Staging gateway is live at `https://wardpass-gateway-staging.fly.dev` (Fly.dev hostname, not a production custom domain). Point `WARDPASS_URL` at it.
 
 Apache-2.0. Product backend remains proprietary.
