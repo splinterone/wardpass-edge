@@ -1,6 +1,6 @@
 {
   "name": "wardpass-edge",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Free hosted WardPass control plane (1 agent seat): Policy Passports, reserve→settle, oversight heartbeat, admin console. OSS client + receiver POST /v1/screen. Not a full self-hosted gateway.",
   "type": "module",
   "main": "./dist/index.js",
@@ -10,6 +10,9 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
+  },
+  "bin": {
+    "wardpass-edge-mcp": "./dist/mcp.js"
   },
   "files": [
     "dist",
@@ -42,5 +45,9 @@
   ],
   "devDependencies": {
     "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.0",
+    "zod": "^3.25.76"
   }
 }
