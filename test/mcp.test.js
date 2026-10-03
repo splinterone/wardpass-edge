@@ -448,6 +448,62 @@ test("a settle network error is outcome_unknown and hides the client error", asy
   }
 });
 
+test("ambiguous settle responses are outcome_unknown and final client errors are not", async () => {
+  const unknown = [
+    { status: 500, body: JSON.stringify({ error: "internal_error" }), contentType: "application/json" },
+    { status: 502, body: "<html><body>Bad Gateway</body></html>", contentType: "text/html" },
+    { status: 503, body: JSON.stringify({ error: "unavailable" }), contentType: "application/json" },
+    { status: 200, body: "<html>not json</html>", contentType: "text/html" },
+  ];
+  const finalErrors = [400, 401, 403, 404, 422];
+  const queue = [
+    ...unknown.map((item) => ({ ...item, unknown: true })),
+    ...finalErrors.map((status) => ({
+      status,
+      body: JSON.stringify({ error: "malformed_request" }),
+      contentType: "application/json",
+      unknown: false,
+    })),
+  ];
+  let fetches = 0;
+  const client = await connect({ WARDPASS_PASSPORT: PASSPORT }, async () => {
+    const next = queue[fetches];
+    fetches += 1;
+    if (!next) throw new Error("unexpected extra settle fetch");
+    return new Response(next.body, {
+      status: next.status,
+      headers: { "content-type": next.contentType },
+    });
+  });
+  try {
+    for (let i = 0; i < queue.length; i += 1) {
+      const result = await client.callTool({
+        name: "wardpass_settle_payment",
+        arguments: {
+          paymentRequirements: requirements,
+          paymentPayload: payload,
+          idempotencyKey: `idem-key-${String(30 + i).padStart(2, "0")}`,
+        },
+      });
+      assert.equal(result.isError, true);
+      const dumped = JSON.stringify(result);
+      assert.equal(dumped.includes("<html"), false);
+      assert.equal(dumped.includes("Bad Gateway"), false);
+      if (queue[i].unknown) {
+        assert.equal(result.structuredContent.status, "outcome_unknown");
+        assert.match(textOf(result), /Do not pay again\. Retry only with the SAME idempotencyKey\./);
+      } else {
+        assert.equal(result.structuredContent.status, undefined);
+        assert.equal(result.structuredContent.code, "malformed_request");
+        assert.equal(textOf(result).includes("SAME idempotencyKey"), false);
+      }
+    }
+    assert.equal(fetches, queue.length);
+  } finally {
+    await client.close();
+  }
+});
+
 test("success false with a policy reason is denied and the reason is passed through", async () => {
   const client = await connect({ WARDPASS_PASSPORT: PASSPORT }, async () => jsonResponse(200, {
     success: false,

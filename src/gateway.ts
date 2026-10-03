@@ -5,7 +5,9 @@
 
 export const DEFAULT_BASE_URL = "https://wardpass-gateway-staging.fly.dev";
 export const LOOKUP_TIMEOUT_MS = 10_000;
-export const SETTLE_TIMEOUT_MS = 60_000;
+export const SETTLE_TIMEOUT_MS = 120_000;
+
+const SETTLE_FINAL_ERROR_STATUS = new Set([400, 401, 403, 404, 422]);
 
 export type FetchLike = typeof fetch;
 
@@ -132,7 +134,10 @@ export async function settlePayment(cfg: GatewayConfig, passport: string, call: 
   }
 
   if (status !== 200) {
-    return { type: "error", code, message: errorMessage(record, code) };
+    if (SETTLE_FINAL_ERROR_STATUS.has(status)) {
+      return { type: "error", code, message: errorMessage(record, code) };
+    }
+    return { type: "outcome_unknown", code };
   }
 
   if (record.success === true) {
@@ -151,7 +156,7 @@ export async function settlePayment(cfg: GatewayConfig, passport: string, call: 
     return { type: "denied", errorReason: reason };
   }
 
-  return { type: "error", code: "malformed_response", message: "the gateway returned an unexpected settle body" };
+  return { type: "outcome_unknown", code: "malformed_response" };
 }
 
 function nonempty(value: string | undefined): string | undefined {

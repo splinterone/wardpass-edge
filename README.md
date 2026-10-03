@@ -10,7 +10,7 @@
 - **Admin console** (operator `/admin` API)
 - **Clearance / `POST /v1/screen`:** Trust Network + live oversight + known agent. Screen before irreversible settle
 
-Install [`wardpass-edge`](https://www.npmjs.com/package/wardpass-edge) and point `WARDPASS_URL` at the live staging gateway.
+Install [`wardpass-edge`](https://www.npmjs.com/package/wardpass-edge) and point `WARDPASS_URL` at hosted WardPass.
 
 This repo is **not** a self-hosted gateway and **not** the AgentBound monorepo. The control plane, ledger, Trust Network, and `/v1/screen` bureau stay on **WardPass hosted**.
 
@@ -51,7 +51,7 @@ export WARDPASS_KEY=abok_…                         # operator key from POST /v
 export WARDPASS_RECEIVER_KEY=abrk_…                # receiver key for /v1/screen (invite-only)
 ```
 
-That host is **staging** (`*.fly.dev`), not a production custom domain. `curl "$WARDPASS_URL/health"` should return `{"status":"ok","mode":"gateway"}`. Free tier = one seat (`maxAgents: 1`); extra seats are a later upsell.
+That host is hosted WardPass (`*.fly.dev`), not a production custom domain. `curl "$WARDPASS_URL/health"` should return `{"status":"ok","mode":"gateway"}`. Free tier = one seat (`maxAgents: 1`); extra seats are a later upsell.
 
 ### 2. Phone home (operators)
 
@@ -105,7 +105,7 @@ await fetch(`${wp.baseUrl}/admin/agents/${created.agentId}/passports`, {
 // Hosted errors: policy_missing | invalid_cap_shape
 
 // Reserve → settle is hosted policy + *your* facilitator(s).
-// Staging also exposes x402 POST /verify and POST /settle
+// Hosted WardPass also exposes x402 POST /verify and POST /settle
 // (paymentPayload + paymentRequirements) — this client does not wrap them.
 
 await fetch(`${wp.baseUrl}/admin/agents/${created.agentId}/kill`, {
@@ -201,6 +201,6 @@ Cursor uses the same shape in `.cursor/mcp.json`, or in `~/.cursor/mcp.json` if 
 
 ## Status
 
-**wardpass-edge@0.2.0** adds the MCP server and is not on npm yet. **wardpass-edge@0.1.1** is on npm: [`wardpass-edge`](https://www.npmjs.com/package/wardpass-edge). Staging gateway is live at `https://wardpass-gateway-staging.fly.dev` (Fly.dev hostname, not a production custom domain). Point `WARDPASS_URL` at it.
+**wardpass-edge@0.2.0** adds the MCP server and is not on npm yet. **wardpass-edge@0.1.1** is on npm: [`wardpass-edge`](https://www.npmjs.com/package/wardpass-edge). Hosted WardPass is live at `https://wardpass-gateway-staging.fly.dev` (Fly.dev hostname, not a production custom domain). Point `WARDPASS_URL` at it.
 
 Apache-2.0. Product backend remains proprietary.
