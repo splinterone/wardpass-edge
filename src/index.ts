@@ -4,6 +4,16 @@
  * Does not implement the full gateway. Not a self-host of AgentBound.
  */
 
+import {
+  resolveBaseUrl,
+  settlePayment as postSettle,
+  SETTLE_TIMEOUT_MS,
+  type GatewayConfig,
+  type SettleResult,
+} from "./gateway.js";
+
+export type { SettleResult };
+
 export type ScreenDecision = "allow" | "review" | "deny" | "insufficient_data";
 
 export type ScreenResult = {
@@ -75,6 +85,43 @@ export class WardPassClient {
     const out = (await res.json()) as ScreenResult & { error?: string };
     if (!res.ok) throw new Error(out.error || `screen_http_${res.status}`);
     return out;
+  }
+
+  /**
+   * Settle under a Policy Passport. Pass reservationId when you have one
+   * from reserve or from an earlier approval response. This does not retry.
+   *
+   * A finished hold refusal comes back as type "error", including HTTP 404
+   * reservation_not_found when you named a reservation. Do not call again
+   * with a new idempotency key. type "awaiting_approval" means a human still
+   * has to approve: retry later with the same idempotency key.
+   * type "outcome_unknown" (settlement_unknown, or a 409 this client does
+   * not recognize) keeps the hold. retryAfterMs, when the gateway sent one,
+   * is how long to wait before that retry.
+   */
+  static async settlePayment(opts: {
+    baseUrl: string;
+    passport: string;
+    paymentRequirements: Record<string, unknown>;
+    paymentPayload: Record<string, unknown>;
+    idempotencyKey: string;
+    reservationId?: string;
+    fetch?: typeof fetch;
+  }): Promise<SettleResult> {
+    if (!opts.baseUrl) throw new Error("baseUrl required");
+    if (!opts.passport) throw new Error("passport required");
+    if (!opts.idempotencyKey) throw new Error("idempotencyKey required");
+    const cfg: GatewayConfig = {
+      baseUrl: resolveBaseUrl(opts.baseUrl),
+      timeoutMs: SETTLE_TIMEOUT_MS,
+      fetchImpl: opts.fetch ?? fetch,
+    };
+    return postSettle(cfg, opts.passport, {
+      paymentRequirements: opts.paymentRequirements,
+      paymentPayload: opts.paymentPayload,
+      idempotencyKey: opts.idempotencyKey,
+      ...(opts.reservationId ? { reservationId: opts.reservationId } : {}),
+    });
   }
 
   /**

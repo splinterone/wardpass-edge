@@ -15,6 +15,9 @@ export const WARDPASS_EDGE_VERSION = "0.2.0";
 const APPROVAL_INSTRUCTION =
   "A human must approve this payment in Telegram or the WardPass console. Do not retry with a new idempotencyKey, do not split it into smaller payments, and do not try another route. After approval the gateway completes it.";
 
+const AWAITING_INSTRUCTION =
+  "This payment is waiting on human approval in Telegram or the WardPass console. Retry later with the same idempotency key. Do not invent a new one, do not split the payment, and do not try another route.";
+
 const OUTCOME_UNKNOWN_MESSAGE = "Do not pay again. Retry only with the SAME idempotencyKey.";
 
 const ALLOW_CAVEAT =
@@ -90,6 +93,14 @@ const settlePaymentInput = z
       .regex(/^[A-Za-z0-9._:-]{8,128}$/)
       .describe(
         "Idempotency key for this settle (8–128 characters: letters, digits, dot, underscore, colon, hyphen). If the outcome is unknown, retry with this same key. Do not invent a new one."
+      ),
+    reservationId: z
+      .string()
+      .trim()
+      .regex(/^\S{1,200}$/)
+      .optional()
+      .describe(
+        "Optional reservation id from a gateway reserve or approval response. When you pass it, settle uses that hold. If that hold is refused, do not retry with a new idempotency key."
       ),
   })
   .strict();
@@ -187,7 +198,7 @@ export function createWardPassMcpServer(opts: { env?: Env; fetch?: FetchLike } =
     "wardpass_settle_payment",
     {
       description:
-        "Settle a payment under the agent's Policy Passport (WARDPASS_PASSPORT). This moves money. Caps and human approval are enforced by WardPass. Splitting a payment to get under an approval threshold is not allowed. If the status is approval_required, stop and wait for a human. Do not retry with a new idempotency key.",
+        "Settle a payment under the agent's Policy Passport (WARDPASS_PASSPORT). This moves money. Caps and human approval are enforced by WardPass. Splitting a payment to get under an approval threshold is not allowed. If you have a reservationId from reserve or from an approval, pass it and WardPass settles that hold. If the status is approval_required, stop and wait for a human. Do not retry with a new idempotency key. If the status is awaiting_approval, the payment is waiting on that human. Retry later with the same idempotency key. A refused hold is final: do not retry that with a new idempotency key. If the status is outcome_unknown, retry only with the same idempotency key.",
       inputSchema: settlePaymentInput,
       annotations: { destructiveHint: true, readOnlyHint: false },
     },
@@ -203,6 +214,7 @@ export function createWardPassMcpServer(opts: { env?: Env; fetch?: FetchLike } =
         paymentRequirements: args.paymentRequirements as Record<string, unknown>,
         paymentPayload: args.paymentPayload as Record<string, unknown>,
         idempotencyKey: args.idempotencyKey,
+        ...(args.reservationId ? { reservationId: args.reservationId } : {}),
       });
       return formatSettle(result, secrets);
     }
@@ -221,6 +233,15 @@ function nonemptyEnv(value: string | undefined): boolean {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function reservationField(reservationId: string | undefined): { reservationId?: string } {
+  return reservationId ? { reservationId } : {};
+}
+
+function unknownMessage(retryAfterMs: number | undefined): string {
+  if (retryAfterMs == null || retryAfterMs <= 0) return OUTCOME_UNKNOWN_MESSAGE;
+  return `${OUTCOME_UNKNOWN_MESSAGE} Wait at least ${retryAfterMs}ms before you retry.`;
+}
+
 function formatSettle(
   result: Awaited<ReturnType<typeof settlePayment>>,
   secrets: string[]
@@ -233,17 +254,22 @@ function formatSettle(
         status: "approval_required",
         approvalId: result.approvalId ?? null,
         expiresAt: result.expiresAt ?? null,
+        ...reservationField(result.reservationId),
         instruction: APPROVAL_INSTRUCTION,
       }, secrets);
     case "awaiting_approval":
-      return ok(`awaiting_approval. ${APPROVAL_INSTRUCTION}`, {
+      return ok(`awaiting_approval. ${AWAITING_INSTRUCTION}`, {
         status: "awaiting_approval",
         approvalId: result.approvalId ?? null,
         expiresAt: result.expiresAt ?? null,
-        instruction: APPROVAL_INSTRUCTION,
+        ...reservationField(result.reservationId),
+        instruction: AWAITING_INSTRUCTION,
       }, secrets);
     case "outcome_unknown":
-      return fail(result.code, OUTCOME_UNKNOWN_MESSAGE, secrets, { status: "outcome_unknown" });
+      return fail(result.code, unknownMessage(result.retryAfterMs), secrets, {
+        status: "outcome_unknown",
+        ...(result.retryAfterMs != null ? { retryAfterMs: result.retryAfterMs } : {}),
+      });
     case "denied":
       return ok(`denied: ${result.errorReason}`, {
         status: "denied",

@@ -14,6 +14,8 @@ const BASE = "https://wardpass-gateway-staging.fly.dev";
 
 const APPROVAL =
   "A human must approve this payment in Telegram or the WardPass console. Do not retry with a new idempotencyKey, do not split it into smaller payments, and do not try another route. After approval the gateway completes it.";
+const AWAITING =
+  "This payment is waiting on human approval in Telegram or the WardPass console. Retry later with the same idempotency key. Do not invent a new one, do not split the payment, and do not try another route.";
 const UNKNOWN = "Do not pay again. Retry only with the SAME idempotencyKey.";
 
 const screenArgs = {
@@ -91,6 +93,12 @@ test("tools/list returns exactly the three tools with input schemas", async () =
     assert.match(
       byName.wardpass_settle_payment.inputSchema.properties.paymentPayload.description,
       /not strict/
+    );
+    const settleRequired = byName.wardpass_settle_payment.inputSchema.required ?? [];
+    assert.equal(settleRequired.includes("reservationId"), false);
+    assert.match(
+      byName.wardpass_settle_payment.inputSchema.properties.reservationId.description,
+      /Optional reservation id/
     );
     assert.equal(fetches, 0);
   } finally {
@@ -329,6 +337,7 @@ test("settle success is settled and forwards the body unchanged", async () => {
     assert.deepEqual(sent.paymentRequirements, requirements);
     assert.deepEqual(sent.paymentPayload, payload);
     assert.equal(sent.idempotencyKey, idempotencyKey);
+    assert.equal(Object.hasOwn(sent, "reservationId"), false);
   } finally {
     await client.close();
   }
@@ -362,20 +371,323 @@ test("approval_required is a normal result, one fetch, and never calls admin", a
   }
 });
 
-test("409 reservation_awaiting_approval maps to awaiting_approval", async () => {
-  const client = await connect({ WARDPASS_PASSPORT: PASSPORT }, async () => jsonResponse(409, {
-    error: "reservation_awaiting_approval",
-    pendingApproval: { approvalId: "ap_9", expiresAt: "2026-02-01T00:00:00Z" },
-  }));
+test("409 reservation_awaiting_approval is pending, not final and not unknown", async () => {
+  const calls = [];
+  const client = await connect({ WARDPASS_PASSPORT: PASSPORT }, async (url, init) => {
+    calls.push({ url: String(url), init });
+    return jsonResponse(409, {
+      success: false,
+      code: "reservation_awaiting_approval",
+      errorReason: "settlement_in_progress",
+      error: "settlement_unknown",
+      reservationId: "res_pending_9",
+      idempotencyKey: "idem-key-03",
+      pendingApproval: { approvalId: "ap_9", expiresAt: "2026-02-01T00:00:00Z" },
+    });
+  });
   try {
     const result = await client.callTool({
       name: "wardpass_settle_payment",
-      arguments: { paymentRequirements: requirements, paymentPayload: payload, idempotencyKey: "idem-key-03" },
+      arguments: {
+        paymentRequirements: requirements,
+        paymentPayload: payload,
+        idempotencyKey: "idem-key-03",
+        reservationId: "res_pending_9",
+      },
     });
     assert.equal(result.isError, undefined);
     assert.equal(result.structuredContent.status, "awaiting_approval");
     assert.equal(result.structuredContent.approvalId, "ap_9");
-    assert.equal(result.structuredContent.instruction, APPROVAL);
+    assert.equal(result.structuredContent.reservationId, "res_pending_9");
+    assert.equal(result.structuredContent.instruction, AWAITING);
+    assert.match(textOf(result), /waiting on human approval/);
+    assert.match(textOf(result), /Retry later with the same idempotency key/);
+    assert.equal(result.structuredContent.status === "outcome_unknown", false);
+    assert.equal(textOf(result).includes("SAME idempotencyKey"), false);
+    assert.equal(calls.length, 1);
+    assert.equal(JSON.parse(calls[0].init.body).idempotencyKey, "idem-key-03");
+  } finally {
+    await client.close();
+  }
+});
+
+test("settle sends reservationId only when you pass one", async () => {
+  const calls = [];
+  const client = await connect({ WARDPASS_PASSPORT: PASSPORT }, async (url, init) => {
+    calls.push({ url: String(url), init });
+    return jsonResponse(200, { success: true, txSignature: "tx_hold" });
+  });
+  try {
+    const held = await client.callTool({
+      name: "wardpass_settle_payment",
+      arguments: {
+        paymentRequirements: requirements,
+        paymentPayload: payload,
+        idempotencyKey: "idem-key-hold-1",
+        reservationId: "  res_hold_1  ",
+      },
+    });
+    assert.equal(held.isError, undefined);
+    assert.equal(held.structuredContent.status, "settled");
+    const sent = JSON.parse(calls[0].init.body);
+    assert.equal(sent.reservationId, "res_hold_1");
+    assert.equal(sent.policyPassport, PASSPORT);
+    assert.equal(sent.idempotencyKey, "idem-key-hold-1");
+    assert.deepEqual(sent.paymentRequirements, requirements);
+    assert.deepEqual(sent.paymentPayload, payload);
+
+    const bare = await client.callTool({
+      name: "wardpass_settle_payment",
+      arguments: {
+        paymentRequirements: requirements,
+        paymentPayload: payload,
+        idempotencyKey: "idem-key-hold-2",
+      },
+    });
+    assert.equal(bare.structuredContent.status, "settled");
+    assert.equal(Object.hasOwn(JSON.parse(calls[1].init.body), "reservationId"), false);
+    assert.equal(calls.length, 2);
+  } finally {
+    await client.close();
+  }
+});
+
+test("a bad reservationId is rejected before fetch", async () => {
+  let fetches = 0;
+  const client = await connect({ WARDPASS_PASSPORT: PASSPORT }, () => {
+    fetches += 1;
+    throw new Error("unexpected fetch");
+  });
+  try {
+    const result = await client.callTool({
+      name: "wardpass_settle_payment",
+      arguments: {
+        paymentRequirements: requirements,
+        paymentPayload: payload,
+        idempotencyKey: "idem-key-hold-3",
+        reservationId: "not a hold",
+      },
+    });
+    assert.equal(result.isError, true);
+    assert.match(textOf(result), /Invalid arguments/);
+    assert.equal(fetches, 0);
+  } finally {
+    await client.close();
+  }
+});
+
+test("approval responses surface reservationId for the next settle", async () => {
+  let mode = "approval";
+  const client = await connect({ WARDPASS_PASSPORT: PASSPORT }, async () => {
+    if (mode === "approval") {
+      return jsonResponse(200, {
+        success: false,
+        errorReason: "approval_required",
+        reservationId: "res_from_approval",
+        pendingApproval: { approvalId: "ap_hold", expiresAt: "2026-03-01T00:00:00Z" },
+      });
+    }
+    return jsonResponse(409, {
+      error: "reservation_awaiting_approval",
+      pendingApproval: {
+        approvalId: "ap_wait",
+        expiresAt: "2026-03-02T00:00:00Z",
+        reservationId: "res_from_pending",
+      },
+    });
+  });
+  try {
+    const approval = await client.callTool({
+      name: "wardpass_settle_payment",
+      arguments: { paymentRequirements: requirements, paymentPayload: payload, idempotencyKey: "idem-key-ap-1" },
+    });
+    assert.equal(approval.isError, undefined);
+    assert.equal(approval.structuredContent.status, "approval_required");
+    assert.equal(approval.structuredContent.reservationId, "res_from_approval");
+    mode = "awaiting";
+    const waiting = await client.callTool({
+      name: "wardpass_settle_payment",
+      arguments: { paymentRequirements: requirements, paymentPayload: payload, idempotencyKey: "idem-key-ap-2" },
+    });
+    assert.equal(waiting.structuredContent.status, "awaiting_approval");
+    assert.equal(waiting.structuredContent.reservationId, "res_from_pending");
+    assert.equal(waiting.structuredContent.approvalId, "ap_wait");
+  } finally {
+    await client.close();
+  }
+});
+
+const FINAL_REFUSALS = [
+  ["reservation_already_settled", /already settled/],
+  ["reservation_released", /was released/],
+  ["reservation_expired", /has expired/],
+  ["reservation_not_open", /not open for settle/],
+  ["reservation_passport_mismatch", /different Policy Passport/],
+  ["reservation_bound_to_other_payment", /different payment/],
+  ["amount_exceeds_hold", /higher than the hold/],
+  ["amount_below_hold", /lower than the hold/],
+  ["reservation_agent_mismatch", /different agent/],
+];
+
+test("final 409 reservation refusals are not retried as unknown", async () => {
+  let fetches = 0;
+  let body = {};
+  const client = await connect({ WARDPASS_PASSPORT: PASSPORT }, async (_url, init) => {
+    fetches += 1;
+    const sent = JSON.parse(init.body);
+    assert.equal(sent.idempotencyKey, `idem-final-${String(fetches).padStart(2, "0")}`);
+    assert.equal(sent.reservationId, "res_final");
+    return jsonResponse(409, body);
+  });
+  try {
+    for (const [code, pattern] of FINAL_REFUSALS) {
+      const before = fetches;
+      body = {
+        success: false,
+        code,
+        errorReason: "not_the_machine_code",
+        error: "settlement_unknown",
+      };
+      const result = await client.callTool({
+        name: "wardpass_settle_payment",
+        arguments: {
+          paymentRequirements: requirements,
+          paymentPayload: payload,
+          idempotencyKey: `idem-final-${String(before + 1).padStart(2, "0")}`,
+          reservationId: "res_final",
+        },
+      });
+      assert.equal(fetches, before + 1);
+      assert.equal(result.isError, true);
+      assert.equal(result.structuredContent.status, undefined);
+      assert.equal(result.structuredContent.code, code);
+      assert.match(textOf(result), pattern);
+      assert.match(textOf(result), /do not retry with a new idempotency key/i);
+      assert.equal(textOf(result).includes("SAME idempotencyKey"), false);
+      assert.equal(textOf(result).includes("not_the_machine_code"), false);
+      assert.equal(result.structuredContent.status === "outcome_unknown", false);
+    }
+  } finally {
+    await client.close();
+  }
+});
+
+test("404 reservation_not_found with a reservationId is a final refusal", async () => {
+  let fetches = 0;
+  const client = await connect({ WARDPASS_PASSPORT: PASSPORT }, async (_url, init) => {
+    fetches += 1;
+    const sent = JSON.parse(init.body);
+    assert.equal(sent.reservationId, "res_missing");
+    return jsonResponse(404, {
+      success: false,
+      code: "reservation_not_found",
+      errorReason: "no such hold",
+      error: "not_found",
+    });
+  });
+  try {
+    const result = await client.callTool({
+      name: "wardpass_settle_payment",
+      arguments: {
+        paymentRequirements: requirements,
+        paymentPayload: payload,
+        idempotencyKey: "idem-missing-01",
+        reservationId: "res_missing",
+      },
+    });
+    assert.equal(fetches, 1);
+    assert.equal(result.isError, true);
+    assert.equal(result.structuredContent.code, "reservation_not_found");
+    assert.equal(result.structuredContent.status, undefined);
+    assert.match(textOf(result), /does not know that reservation/);
+    assert.match(textOf(result), /do not retry with a new idempotency key/i);
+    assert.equal(textOf(result).includes("SAME idempotencyKey"), false);
+    assert.equal(textOf(result).includes("no such hold"), false);
+  } finally {
+    await client.close();
+  }
+});
+
+test("settle code falls back from code to errorReason to error", async () => {
+  const cases = [
+    {
+      body: { code: "amount_below_hold", errorReason: "settlement_in_progress", error: "settlement_unknown" },
+      code: "amount_below_hold",
+    },
+    {
+      body: { errorReason: "reservation_expired", error: "settlement_unknown" },
+      code: "reservation_expired",
+    },
+    {
+      body: { error: "reservation_released" },
+      code: "reservation_released",
+    },
+    {
+      body: { error: "reservation_awaiting_approval", pendingApproval: { approvalId: "ap_old" } },
+      code: "reservation_awaiting_approval",
+      awaiting: true,
+    },
+  ];
+  let fetches = 0;
+  const client = await connect({ WARDPASS_PASSPORT: PASSPORT }, async () => {
+    const next = cases[fetches];
+    fetches += 1;
+    return jsonResponse(409, next.body);
+  });
+  try {
+    for (let i = 0; i < cases.length; i += 1) {
+      const result = await client.callTool({
+        name: "wardpass_settle_payment",
+        arguments: {
+          paymentRequirements: requirements,
+          paymentPayload: payload,
+          idempotencyKey: `idem-fallback-${String(i + 1).padStart(2, "0")}`,
+          reservationId: "res_fallback",
+        },
+      });
+      if (cases[i].awaiting) {
+        assert.equal(result.isError, undefined);
+        assert.equal(result.structuredContent.status, "awaiting_approval");
+        assert.equal(result.structuredContent.approvalId, "ap_old");
+        assert.equal(result.structuredContent.instruction, AWAITING);
+      } else {
+        assert.equal(result.isError, true);
+        assert.equal(result.structuredContent.code, cases[i].code);
+        assert.equal(result.structuredContent.status, undefined);
+        assert.equal(textOf(result).includes("SAME idempotencyKey"), false);
+      }
+    }
+    assert.equal(fetches, cases.length);
+  } finally {
+    await client.close();
+  }
+});
+
+test("settlement_unknown honours retryAfterMs and does not use errorReason", async () => {
+  const client = await connect({ WARDPASS_PASSPORT: PASSPORT }, async () => jsonResponse(409, {
+    success: false,
+    errorReason: "settlement_in_progress",
+    code: "settlement_unknown",
+    idempotencyKey: "idem-unk-01",
+    retryAfterMs: 2500,
+  }));
+  try {
+    const result = await client.callTool({
+      name: "wardpass_settle_payment",
+      arguments: {
+        paymentRequirements: requirements,
+        paymentPayload: payload,
+        idempotencyKey: "idem-unk-01",
+        reservationId: "res_unk",
+      },
+    });
+    assert.equal(result.isError, true);
+    assert.equal(result.structuredContent.status, "outcome_unknown");
+    assert.equal(result.structuredContent.code, "settlement_unknown");
+    assert.equal(result.structuredContent.retryAfterMs, 2500);
+    assert.match(textOf(result), /Do not pay again\. Retry only with the SAME idempotencyKey\./);
+    assert.match(textOf(result), /Wait at least 2500ms before you retry/);
+    assert.equal(textOf(result).includes("settlement_in_progress"), false);
   } finally {
     await client.close();
   }
@@ -400,6 +712,70 @@ test("409 settlement_in_progress and settlement_unknown are outcome_unknown", as
     });
     assert.equal(unknown.structuredContent.status, "outcome_unknown");
     assert.equal(unknown.structuredContent.code, "settlement_unknown");
+    assert.match(textOf(unknown), /SAME idempotencyKey/);
+  } finally {
+    await client.close();
+  }
+});
+
+test("a 409 with no code or an unrecognized code stays outcome_unknown", async () => {
+  const queue = [
+    {},
+    { detail: "facilitator said nothing useful" },
+    { error: "some_future_gateway_code" },
+    { error: "" },
+  ];
+  let fetches = 0;
+  const client = await connect({ WARDPASS_PASSPORT: PASSPORT }, async () => {
+    const next = queue[fetches];
+    fetches += 1;
+    return jsonResponse(409, next);
+  });
+  try {
+    for (let i = 0; i < queue.length; i += 1) {
+      const result = await client.callTool({
+        name: "wardpass_settle_payment",
+        arguments: {
+          paymentRequirements: requirements,
+          paymentPayload: payload,
+          idempotencyKey: `idem-old-${String(i + 1).padStart(2, "0")}`,
+        },
+      });
+      assert.equal(result.isError, true);
+      assert.equal(result.structuredContent.status, "outcome_unknown");
+      assert.match(textOf(result), /Do not pay again\. Retry only with the SAME idempotencyKey\./);
+      assert.equal(textOf(result).includes("facilitator said nothing"), false);
+    }
+    assert.equal(fetches, queue.length);
+  } finally {
+    await client.close();
+  }
+});
+
+test("HTTP 200 screening and cap failures stay denied", async () => {
+  const reasons = ["per_payment_cap_exceeded", "screen_deny"];
+  let fetches = 0;
+  const client = await connect({ WARDPASS_PASSPORT: PASSPORT }, async () => {
+    const errorReason = reasons[fetches];
+    fetches += 1;
+    return jsonResponse(200, { success: false, errorReason });
+  });
+  try {
+    for (const errorReason of reasons) {
+      const result = await client.callTool({
+        name: "wardpass_settle_payment",
+        arguments: {
+          paymentRequirements: requirements,
+          paymentPayload: payload,
+          idempotencyKey: `idem-deny-${errorReason}`,
+        },
+      });
+      assert.equal(result.isError, undefined);
+      assert.equal(result.structuredContent.status, "denied");
+      assert.equal(result.structuredContent.errorReason, errorReason);
+      assert.equal(textOf(result).includes("SAME idempotencyKey"), false);
+      assert.equal(textOf(result).includes("new idempotency key"), false);
+    }
   } finally {
     await client.close();
   }
