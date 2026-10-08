@@ -36,15 +36,60 @@ export type SettleCall = {
   paymentRequirements: Record<string, unknown>;
   paymentPayload: Record<string, unknown>;
   idempotencyKey: string;
+  /** From a reserve/approval response, or passed in by the caller. Sent only when set. */
+  reservationId?: string;
 };
 
 export type SettleResult =
   | { type: "settled"; fields: Record<string, unknown> }
-  | { type: "approval_required"; approvalId?: string; expiresAt?: string }
-  | { type: "awaiting_approval"; approvalId?: string; expiresAt?: string }
+  | { type: "approval_required"; approvalId?: string; expiresAt?: string; reservationId?: string }
+  | { type: "awaiting_approval"; approvalId?: string; expiresAt?: string; reservationId?: string }
   | { type: "outcome_unknown"; code: string }
   | { type: "denied"; errorReason: string }
   | { type: "error"; code: string; message: string };
+
+/**
+ * 409 codes that are a finished refusal. The hold is not in an unknown
+ * chain state, so the caller must not retry with a new idempotency key.
+ *
+ * `settlement_unknown` is intentionally absent: a facilitator timeout
+ * still holds the reservation, and the same idempotency key is the retry.
+ * Any other 409 code is treated the same way, so an older gateway stays
+ * compatible.
+ *
+ * Wrong-owner, expired, and unknown-id names follow the gateway's
+ * snake_case (`reservation_passport_mismatch`, `reservation_awaiting_approval`).
+ * A later gateway change may answer another agent's reservation id with
+ * the same body as an unknown id. Both stay final.
+ */
+const FINAL_REFUSAL_MESSAGES: Record<string, string> = {
+  reservation_already_settled:
+    "This hold is already settled. Do not settle it again, and do not retry with a new idempotency key.",
+  reservation_passport_mismatch:
+    "This hold was reserved with a different Policy Passport. Do not retry with a new idempotency key. Use the passport that created the hold.",
+  reservation_bound_to_other_payment:
+    "This hold is already tied to a different payment. Do not retry with a new idempotency key.",
+  amount_exceeds_hold:
+    "That amount is higher than the hold. Do not retry with a new idempotency key. Settle the held amount, or reserve a new hold for the higher amount.",
+  amount_below_hold:
+    "That amount is lower than the hold. Do not retry with a new idempotency key. Settle the held amount.",
+  reservation_owner_mismatch:
+    "This hold belongs to a different agent. Do not retry with a new idempotency key.",
+  reservation_wrong_owner:
+    "This hold belongs to a different agent. Do not retry with a new idempotency key.",
+  reservation_agent_mismatch:
+    "This hold belongs to a different agent. Do not retry with a new idempotency key.",
+  reservation_wrong_agent:
+    "This hold belongs to a different agent. Do not retry with a new idempotency key.",
+  reservation_expired:
+    "This hold has expired. Do not retry with a new idempotency key. Reserve a new hold if you still need to pay.",
+  reservation_not_found:
+    "WardPass does not know that reservation. Do not retry with a new idempotency key. Reserve a hold, then settle it with that reservationId.",
+  reservation_unknown:
+    "WardPass does not know that reservation. Do not retry with a new idempotency key. Reserve a hold, then settle it with that reservationId.",
+  unknown_reservation:
+    "WardPass does not know that reservation. Do not retry with a new idempotency key. Reserve a hold, then settle it with that reservationId.",
+};
 
 export type Env = Record<string, string | undefined>;
 
@@ -107,12 +152,7 @@ export async function settlePayment(cfg: GatewayConfig, passport: string, call: 
     const res = await request(cfg, "/settle", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        policyPassport: passport,
-        paymentRequirements: call.paymentRequirements,
-        paymentPayload: call.paymentPayload,
-        idempotencyKey: call.idempotencyKey,
-      }),
+      body: JSON.stringify(settleBody(passport, call)),
     }, SETTLE_TIMEOUT_MS);
     status = res.status;
     body = res.body;
@@ -130,12 +170,15 @@ export async function settlePayment(cfg: GatewayConfig, passport: string, call: 
     if (code === "reservation_awaiting_approval") {
       return { type: "awaiting_approval", ...approvalFields(record) };
     }
+    const refusal = finalRefusalMessage(code);
+    if (refusal) return { type: "error", code, message: refusal };
     return { type: "outcome_unknown", code };
   }
 
   if (status !== 200) {
     if (SETTLE_FINAL_ERROR_STATUS.has(status)) {
-      return { type: "error", code, message: errorMessage(record, code) };
+      const refusal = finalRefusalMessage(code);
+      return { type: "error", code, message: refusal ?? errorMessage(record, code) };
     }
     return { type: "outcome_unknown", code };
   }
@@ -239,13 +282,41 @@ function httpFailure(status: number, body: unknown): GatewayFailure {
   return new GatewayFailure(code, errorMessage(record, code));
 }
 
-function approvalFields(body: Record<string, unknown>): { approvalId?: string; expiresAt?: string } {
+function settleBody(passport: string, call: SettleCall): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    policyPassport: passport,
+    paymentRequirements: call.paymentRequirements,
+    paymentPayload: call.paymentPayload,
+    idempotencyKey: call.idempotencyKey,
+  };
+  const reservationId = cleanReservationId(call.reservationId);
+  if (reservationId) body.reservationId = reservationId;
+  return body;
+}
+
+function cleanReservationId(value: string | undefined): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function finalRefusalMessage(code: string): string | undefined {
+  return FINAL_REFUSAL_MESSAGES[code];
+}
+
+function approvalFields(body: Record<string, unknown>): {
+  approvalId?: string;
+  expiresAt?: string;
+  reservationId?: string;
+} {
   const pending = asRecord(body.pendingApproval);
   const approvalId = stringField(pending.approvalId) ?? stringField(body.approvalId);
   const expiresAt = stringField(pending.expiresAt) ?? stringField(body.expiresAt);
+  const reservationId = cleanReservationId(stringField(body.reservationId) ?? stringField(pending.reservationId));
   return {
     ...(approvalId ? { approvalId } : {}),
     ...(expiresAt ? { expiresAt } : {}),
+    ...(reservationId ? { reservationId } : {}),
   };
 }
 

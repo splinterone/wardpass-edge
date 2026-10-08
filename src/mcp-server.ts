@@ -91,6 +91,14 @@ const settlePaymentInput = z
       .describe(
         "Idempotency key for this settle (8–128 characters: letters, digits, dot, underscore, colon, hyphen). If the outcome is unknown, retry with this same key. Do not invent a new one."
       ),
+    reservationId: z
+      .string()
+      .trim()
+      .regex(/^\S{1,200}$/)
+      .optional()
+      .describe(
+        "Optional reservation id from a gateway reserve or approval response. When you pass it, settle uses that hold. If that hold is refused, do not retry with a new idempotency key."
+      ),
   })
   .strict();
 
@@ -187,7 +195,7 @@ export function createWardPassMcpServer(opts: { env?: Env; fetch?: FetchLike } =
     "wardpass_settle_payment",
     {
       description:
-        "Settle a payment under the agent's Policy Passport (WARDPASS_PASSPORT). This moves money. Caps and human approval are enforced by WardPass. Splitting a payment to get under an approval threshold is not allowed. If the status is approval_required, stop and wait for a human. Do not retry with a new idempotency key.",
+        "Settle a payment under the agent's Policy Passport (WARDPASS_PASSPORT). This moves money. Caps and human approval are enforced by WardPass. Splitting a payment to get under an approval threshold is not allowed. If you have a reservationId from reserve or from an approval, pass it and WardPass settles that hold. If the status is approval_required, stop and wait for a human. Do not retry with a new idempotency key. A refused hold is final in the same way. If the status is outcome_unknown, retry only with the same idempotency key.",
       inputSchema: settlePaymentInput,
       annotations: { destructiveHint: true, readOnlyHint: false },
     },
@@ -203,6 +211,7 @@ export function createWardPassMcpServer(opts: { env?: Env; fetch?: FetchLike } =
         paymentRequirements: args.paymentRequirements as Record<string, unknown>,
         paymentPayload: args.paymentPayload as Record<string, unknown>,
         idempotencyKey: args.idempotencyKey,
+        ...(args.reservationId ? { reservationId: args.reservationId } : {}),
       });
       return formatSettle(result, secrets);
     }
@@ -221,6 +230,10 @@ function nonemptyEnv(value: string | undefined): boolean {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function reservationField(reservationId: string | undefined): { reservationId?: string } {
+  return reservationId ? { reservationId } : {};
+}
+
 function formatSettle(
   result: Awaited<ReturnType<typeof settlePayment>>,
   secrets: string[]
@@ -233,6 +246,7 @@ function formatSettle(
         status: "approval_required",
         approvalId: result.approvalId ?? null,
         expiresAt: result.expiresAt ?? null,
+        ...reservationField(result.reservationId),
         instruction: APPROVAL_INSTRUCTION,
       }, secrets);
     case "awaiting_approval":
@@ -240,6 +254,7 @@ function formatSettle(
         status: "awaiting_approval",
         approvalId: result.approvalId ?? null,
         expiresAt: result.expiresAt ?? null,
+        ...reservationField(result.reservationId),
         instruction: APPROVAL_INSTRUCTION,
       }, secrets);
     case "outcome_unknown":
