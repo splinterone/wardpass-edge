@@ -44,27 +44,31 @@ export type SettleResult =
   | { type: "settled"; fields: Record<string, unknown> }
   | { type: "approval_required"; approvalId?: string; expiresAt?: string; reservationId?: string }
   | { type: "awaiting_approval"; approvalId?: string; expiresAt?: string; reservationId?: string }
-  | { type: "outcome_unknown"; code: string }
+  | { type: "outcome_unknown"; code: string; retryAfterMs?: number }
   | { type: "denied"; errorReason: string }
   | { type: "error"; code: string; message: string };
 
 /**
- * 409 codes that are a finished refusal. The hold is not in an unknown
- * chain state, so the caller must not retry with a new idempotency key.
+ * Finished hold refusals. Do not retry these with a new idempotency key.
  *
- * `settlement_unknown` is intentionally absent: a facilitator timeout
- * still holds the reservation, and the same idempotency key is the retry.
- * Any other 409 code is treated the same way, so an older gateway stays
- * compatible.
+ * `reservation_not_found` is HTTP 404, not 409. It is still a finished
+ * refusal when the caller named a reservation. A later gateway change may
+ * answer another agent's id with that same 404.
  *
- * Wrong-owner, expired, and unknown-id names follow the gateway's
- * snake_case (`reservation_passport_mismatch`, `reservation_awaiting_approval`).
- * A later gateway change may answer another agent's reservation id with
- * the same body as an unknown id. Both stay final.
+ * `settlement_unknown` is not in this list. A facilitator timeout keeps
+ * the hold, and the same idempotency key is the retry. Any other 409 code
+ * is treated the same way, so an older gateway stays compatible.
+ * `reservation_awaiting_approval` is pending, not a refusal and not unknown.
  */
 const FINAL_REFUSAL_MESSAGES: Record<string, string> = {
   reservation_already_settled:
     "This hold is already settled. Do not settle it again, and do not retry with a new idempotency key.",
+  reservation_released:
+    "This hold was released. Do not retry with a new idempotency key. Reserve a new hold if you still need to pay.",
+  reservation_expired:
+    "This hold has expired. Do not retry with a new idempotency key. Reserve a new hold if you still need to pay.",
+  reservation_not_open:
+    "This hold is not open for settle. Do not retry with a new idempotency key.",
   reservation_passport_mismatch:
     "This hold was reserved with a different Policy Passport. Do not retry with a new idempotency key. Use the passport that created the hold.",
   reservation_bound_to_other_payment:
@@ -73,21 +77,9 @@ const FINAL_REFUSAL_MESSAGES: Record<string, string> = {
     "That amount is higher than the hold. Do not retry with a new idempotency key. Settle the held amount, or reserve a new hold for the higher amount.",
   amount_below_hold:
     "That amount is lower than the hold. Do not retry with a new idempotency key. Settle the held amount.",
-  reservation_owner_mismatch:
-    "This hold belongs to a different agent. Do not retry with a new idempotency key.",
-  reservation_wrong_owner:
-    "This hold belongs to a different agent. Do not retry with a new idempotency key.",
   reservation_agent_mismatch:
     "This hold belongs to a different agent. Do not retry with a new idempotency key.",
-  reservation_wrong_agent:
-    "This hold belongs to a different agent. Do not retry with a new idempotency key.",
-  reservation_expired:
-    "This hold has expired. Do not retry with a new idempotency key. Reserve a new hold if you still need to pay.",
   reservation_not_found:
-    "WardPass does not know that reservation. Do not retry with a new idempotency key. Reserve a hold, then settle it with that reservationId.",
-  reservation_unknown:
-    "WardPass does not know that reservation. Do not retry with a new idempotency key. Reserve a hold, then settle it with that reservationId.",
-  unknown_reservation:
     "WardPass does not know that reservation. Do not retry with a new idempotency key. Reserve a hold, then settle it with that reservationId.",
 };
 
@@ -164,7 +156,7 @@ export async function settlePayment(cfg: GatewayConfig, passport: string, call: 
   }
 
   const record = asRecord(body);
-  const code = errorCode(record, status);
+  const code = settleCode(record, status);
 
   if (status === 409) {
     if (code === "reservation_awaiting_approval") {
@@ -172,9 +164,11 @@ export async function settlePayment(cfg: GatewayConfig, passport: string, call: 
     }
     const refusal = finalRefusalMessage(code);
     if (refusal) return { type: "error", code, message: refusal };
-    return { type: "outcome_unknown", code };
+    return unknownOutcome(code, record);
   }
 
+  // 400/401/403/404/422 are finished responses, not a dropped connection.
+  // 404 reservation_not_found is an unknown reservation id.
   if (status !== 200) {
     if (SETTLE_FINAL_ERROR_STATUS.has(status)) {
       const refusal = finalRefusalMessage(code);
@@ -262,6 +256,28 @@ function errorCode(body: Record<string, unknown>, status: number): string {
     if (typeof value === "string" && value.trim()) return value.trim().slice(0, 200);
   }
   return `http_${status}`;
+}
+
+/** Settle puts the machine code in `code`, a reason in `errorReason`, and older gateways used `error`. */
+function settleCode(body: Record<string, unknown>, status: number): string {
+  for (const key of ["code", "errorReason", "error"]) {
+    const value = body[key];
+    if (typeof value === "string" && value.trim()) return value.trim().slice(0, 200);
+  }
+  return `http_${status}`;
+}
+
+function readRetryAfterMs(body: Record<string, unknown>): number | undefined {
+  const value = body.retryAfterMs;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return undefined;
+  return value;
+}
+
+function unknownOutcome(code: string, body: Record<string, unknown>): SettleResult {
+  if (code !== "settlement_unknown") return { type: "outcome_unknown", code };
+  const retryAfterMs = readRetryAfterMs(body);
+  if (retryAfterMs == null) return { type: "outcome_unknown", code };
+  return { type: "outcome_unknown", code, retryAfterMs };
 }
 
 function errorMessage(body: Record<string, unknown>, code: string): string {

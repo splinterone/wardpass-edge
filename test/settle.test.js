@@ -88,6 +88,48 @@ test("WardPassClient.settlePayment returns reservationId from an approval body",
   assert.equal(result.reservationId, "res_lib_pending");
 });
 
+test("WardPassClient.settlePayment maps code before errorReason and honours retryAfterMs", async () => {
+  const unknown = await WardPassClient.settlePayment({
+    baseUrl: BASE,
+    passport: PASSPORT,
+    paymentRequirements: requirements,
+    paymentPayload: payload,
+    idempotencyKey: "idem-lib-05",
+    reservationId: "res_lib_unk",
+    fetch: async () => jsonResponse(409, {
+      success: false,
+      errorReason: "settlement_in_progress",
+      code: "settlement_unknown",
+      idempotencyKey: "idem-lib-05",
+      retryAfterMs: 1500,
+    }),
+  });
+  assert.equal(unknown.type, "outcome_unknown");
+  assert.equal(unknown.code, "settlement_unknown");
+  assert.equal(unknown.retryAfterMs, 1500);
+
+  const missing = await WardPassClient.settlePayment({
+    baseUrl: BASE,
+    passport: PASSPORT,
+    paymentRequirements: requirements,
+    paymentPayload: payload,
+    idempotencyKey: "idem-lib-06",
+    reservationId: "res_lib_missing",
+    fetch: async (_url, init) => {
+      assert.equal(JSON.parse(init.body).reservationId, "res_lib_missing");
+      return jsonResponse(404, {
+        success: false,
+        code: "reservation_not_found",
+        errorReason: "no such hold",
+      });
+    },
+  });
+  assert.equal(missing.type, "error");
+  assert.equal(missing.code, "reservation_not_found");
+  assert.match(missing.message, /does not know that reservation/);
+  assert.equal(missing.message.includes("SAME idempotencyKey"), false);
+});
+
 test("a blank reservationId is left off the settle body", async () => {
   const result = await WardPassClient.settlePayment({
     baseUrl: BASE,

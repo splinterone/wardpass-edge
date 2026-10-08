@@ -183,7 +183,9 @@ You can point this client at your own DIY settle path without WardPass hosting. 
 
 `approval_required` means a human approves that payment in Telegram or the WardPass console. Stop there. Do not retry it with a new idempotency key, do not split it, and do not try another route.
 
-A refused hold is final. That covers already settled, a different passport, a hold already tied to another payment, an amount above or below the hold, the wrong owner, an expired hold, or a reservation id WardPass does not know. Do not retry those with a new idempotency key. `outcome_unknown` is the other case: the facilitator timed out (`settlement_unknown`), or the gateway sent a 409 this client does not recognize. Retry only with the same idempotency key, and do not pay again. A screening miss or a per-payment cap refusal still comes back as a normal denial, not as an unknown outcome.
+`awaiting_approval` means that approval is still pending on the hold. Retry later with the same idempotency key. The gateway returns the same approval id while it is waiting. Do not invent a new key.
+
+A refused hold is final. That is already settled, released, expired, not open, a different passport, a hold already tied to another payment, an amount above or below the hold, or another agent's hold (`reservation_agent_mismatch`). An unknown reservation id is HTTP 404 `reservation_not_found`, and that is final too, not a dropped connection. A later gateway may use that same 404 for another agent's id. Do not retry any of these with a new idempotency key. `outcome_unknown` is the other case: the facilitator timed out (`settlement_unknown`), or the gateway sent a 409 this client does not recognize. Retry only with the same idempotency key, and do not pay again. If that body includes `retryAfterMs`, wait at least that long. A screening miss or a per-payment cap refusal still comes back as a normal denial, not as an unknown outcome.
 
 The same settle is on `WardPassClient.settlePayment`. `reservationId` is optional there too. Leave it out when you do not have a hold id.
 

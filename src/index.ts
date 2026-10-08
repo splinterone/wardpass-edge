@@ -91,10 +91,13 @@ export class WardPassClient {
    * Settle under a Policy Passport. Pass reservationId when you have one
    * from reserve or from an earlier approval response. This does not retry.
    *
-   * A finished hold refusal comes back as type "error". Do not call again
-   * with a new idempotency key. type "outcome_unknown" (facilitator timeout,
-   * or a 409 this client does not recognize) keeps the hold: retry with the
-   * same idempotency key.
+   * A finished hold refusal comes back as type "error", including HTTP 404
+   * reservation_not_found when you named a reservation. Do not call again
+   * with a new idempotency key. type "awaiting_approval" means a human still
+   * has to approve: retry later with the same idempotency key.
+   * type "outcome_unknown" (settlement_unknown, or a 409 this client does
+   * not recognize) keeps the hold. retryAfterMs, when the gateway sent one,
+   * is how long to wait before that retry.
    */
   static async settlePayment(opts: {
     baseUrl: string;
